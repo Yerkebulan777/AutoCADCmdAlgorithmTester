@@ -60,7 +60,8 @@ namespace AutoCADCmdAlgorithmTester
                         {
                             string content = BuildMTextContent(block.Rows);
                             (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
-                            CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
+                            double lsf = ComputeLineSpacingFactor(block.Rows, template.Height);
+                            CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width, lsf);
                         }
                     }
 
@@ -283,6 +284,23 @@ namespace AutoCADCmdAlgorithmTester
             return sb.ToString();
         }
 
+        private static double ComputeLineSpacingFactor(List<List<MTextMetrics>> rows, double textHeight)
+        {
+            if (rows.Count < 2 || textHeight < MTextJoinerConfig.MinTextHeight) return 1.0;
+
+            double totalSpacing = 0;
+            for (int i = 0; i < rows.Count - 1; i++)
+            {
+                double upperCentroidY = rows[i].Average(t => t.Centroid.Y);
+                double lowerCentroidY = rows[i + 1].Average(t => t.Centroid.Y);
+                totalSpacing += upperCentroidY - lowerCentroidY;
+            }
+
+            double avgSpacing = totalSpacing / (rows.Count - 1);
+            double factor = avgSpacing / (textHeight * (5.0 / 3.0));
+            return Math.Clamp(factor, 0.25, 4.0);
+        }
+
         private static (Point3d InsertionPoint, MTextMetrics Template) GetBlockAnchor(List<List<MTextMetrics>> rows)
         {
             IEnumerable<MTextMetrics> elements = rows.SelectMany(row => row);
@@ -298,7 +316,7 @@ namespace AutoCADCmdAlgorithmTester
             return (insertionPoint, topElement);
         }
 
-        private static void CreateResultMText(BlockTableRecord currentSpace, Transaction trx, string content, MTextMetrics template, Point3d insertionPoint, double width)
+        private static void CreateResultMText(BlockTableRecord currentSpace, Transaction trx, string content, MTextMetrics template, Point3d insertionPoint, double width, double lineSpacingFactor = 1.0)
         {
             MText result = new()
             {
@@ -309,7 +327,9 @@ namespace AutoCADCmdAlgorithmTester
                 TextHeight = template.Height,
                 TextStyleId = template.StyleId,
                 Rotation = template.Rotation,
-                Attachment = AttachmentPoint.TopLeft
+                Attachment = AttachmentPoint.TopLeft,
+                LineSpacingStyle = LineSpacingStyle.Exactly,
+                LineSpacingFactor = lineSpacingFactor,
             };
 
             result.SetDatabaseDefaults();
