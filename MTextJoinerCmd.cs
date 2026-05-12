@@ -283,14 +283,31 @@ namespace AutoCADCmdAlgorithmTester
 
             foreach (MTextMetrics item in rows.SelectMany(row => row))
             {
-                if (item.Bounds.MinPoint.X < minX)
-                {
-                    minX = item.Bounds.MinPoint.X;
-                }
+                Point3d itemBottom = item.Bounds.MinPoint;
+                Point3d itemTop = item.Bounds.MaxPoint;
 
-                if (topElement is null || item.Bounds.MaxPoint.Y > topElement.Bounds.MaxPoint.Y || (item.Bounds.MaxPoint.Y == topElement.Bounds.MaxPoint.Y && item.Bounds.MinPoint.X < topElement.Bounds.MinPoint.X))
+                if (itemBottom.X < minX)
+                {
+                    minX = itemBottom.X;
+                }
+                if (topElement is null)
                 {
                     topElement = item;
+                }
+                else if (topElement is MTextMetrics)
+                {
+                    Point3d topElementTop = topElement.Bounds.MaxPoint;
+                    Point3d topElementBottom = topElement.Bounds.MinPoint;
+                    // Выбираем элемент с наибольшей Y-координатой верхней границы.
+                    if (itemTop.Y > topElementTop.Y)
+                    {
+                        topElement = item;
+                    }
+                    // Если верхние границы по Y совпадают, то выбираем элемент, у которого нижняя граница находится левее.
+                    else if (itemTop.Y == topElementTop.Y && itemBottom.X < topElementBottom.X)
+                    {
+                        topElement = item;
+                    }
                 }
             }
 
@@ -317,7 +334,7 @@ namespace AutoCADCmdAlgorithmTester
 
             result.SetDatabaseDefaults();
 
-            currentSpace.AppendEntity(result);
+            _ = currentSpace.AppendEntity(result);
 
             trx.AddNewlyCreatedDBObject(result, true);
         }
