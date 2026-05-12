@@ -173,7 +173,7 @@ namespace AutoCADCmdAlgorithmTester
             {
                 foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
                 {
-                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.CanAppend(segment, BLOCK_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER));
+                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.IsCompatible(segment, BLOCK_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER));
 
                     if (targetBlock is null)
                     {

@@ -4,39 +4,28 @@ namespace AutoCADCmdAlgorithmTester
     /// Логический абзац: одна или несколько строк текста, которые принадлежат
     /// одному блоку, потому что они совпадают по горизонтали И смежны вертикально.
     ///
-    /// Решение об объединении (CanAppend) требует выполнения ОБОИХ условий:
+    /// Решение об объединении (IsCompatible) требует выполнения ОБОИХ условий:
     ///   X — горизонтальный диапазон строки перекрывается с диапазоном блока (с допуском).
     ///   Y — верхняя граница строки не слишком далеко ниже нижней границы последней строки блока.
     ///       Это предотвращает слияние колонтитула (Y=50) с заголовком (Y=500),
     ///       которые случайно оказались в одном диапазоне X.
     ///
     /// Система координат AutoCAD: Y растёт вверх, поэтому
-    ///   верх  = Bounds.MaxPoint.Y (бо́льшее значение)
+    ///   верх  = Bounds.MaxPoint.Y (большее значение)
     ///   низ   = Bounds.MinPoint.Y (меньшее значение)
     /// </summary>
-    internal sealed class MTextBlock
+    internal sealed class MTextBlock(List<MTextMetrics> firstRow)
     {
-        public MTextBlock(List<MTextMetrics> firstRow)
-        {
-            Rows.Add(firstRow);
-            RefreshBounds(firstRow);
-        }
+        public List<List<MTextMetrics>> Rows { get; } = [firstRow];
 
-        public List<List<MTextMetrics>> Rows { get; } = [];
-
-        // Горизонтальный охват всего блока (все строки вместе).
-        private double MinX { get; set; } = double.MaxValue;
-        private double MaxX { get; set; } = double.MinValue;
-
-        // Вертикальный охват всего блока.
-        private double MinY { get; set; } = double.MaxValue;
-        private double MaxY { get; set; } = double.MinValue;
+        private double MinX { get; set; } = firstRow.Min(t => t.Bounds.MinPoint.X);
+        private double MaxX { get; set; } = firstRow.Max(t => t.Bounds.MaxPoint.X);
+        private double MinY { get; set; } = firstRow.Min(t => t.Bounds.MinPoint.Y);
+        private double MaxY { get; set; } = firstRow.Max(t => t.Bounds.MaxPoint.Y);
 
         // Нижняя Y-граница последней добавленной строки.
-        // Используется в CanAppend для измерения вертикального разрыва до следующей строки-кандидата.
-        // double.MaxValue как начальное значение безопасно: конструктор вызывает RefreshBounds
-        // до первого внешнего обращения к CanAppend, поэтому это значение никогда не используется.
-        private double LastRowMinY { get; set; } = double.MaxValue;
+        // Используется в IsCompatible для измерения вертикального разрыва до следующей строки-кандидата.
+        private double LastRowMinY { get; set; } = firstRow.Min(t => t.Bounds.MinPoint.Y);
 
         /// <summary>
         /// Ширина блока. Используется при создании итогового MText в AutoCAD.
@@ -66,7 +55,7 @@ namespace AutoCADCmdAlgorithmTester
         ///     Допуск для проверки Y-близости, в единицах высоты текста.
         ///     Определяет, насколько большой вертикальный разрыв ещё считается "одним абзацем".
         /// </param>
-        public bool CanAppend(List<MTextMetrics> row, double blockGapMultiplier, double rowGapMultiplier)
+        public bool IsCompatible(List<MTextMetrics> row, double blockGapMultiplier, double rowGapMultiplier)
         {
             double maxHeight = row.Max(t => t.Height);
 
@@ -91,7 +80,7 @@ namespace AutoCADCmdAlgorithmTester
 
         /// <summary>
         /// Добавляет строку в блок и расширяет границы.
-        /// Вызывать только после того, как CanAppend вернул true.
+        /// Вызывать только после того, как IsCompatible вернул true.
         /// </summary>
         public void Append(List<MTextMetrics> row)
         {
@@ -101,21 +90,17 @@ namespace AutoCADCmdAlgorithmTester
 
         /// <summary>
         /// Расширяет MinX/MaxX/MinY/MaxY до охвата переданной строки
-        /// и запоминает её нижнюю Y-границу в LastRowMinY для следующей проверки CanAppend.
+        /// и запоминает её нижнюю Y-границу в LastRowMinY для следующей проверки IsCompatible.
         /// Материализуем IEnumerable один раз, чтобы не перечислять его пять раз.
         /// </summary>
         private void RefreshBounds(IEnumerable<MTextMetrics> row)
         {
-            List<MTextMetrics> rowList = [.. row];
-
-            MinX = Math.Min(MinX, rowList.Min(t => t.Bounds.MinPoint.X));
-            MaxX = Math.Max(MaxX, rowList.Max(t => t.Bounds.MaxPoint.X));
-            MinY = Math.Min(MinY, rowList.Min(t => t.Bounds.MinPoint.Y));
-            MaxY = Math.Max(MaxY, rowList.Max(t => t.Bounds.MaxPoint.Y));
-
-            // Запоминаем низ этой строки, чтобы следующий вызов CanAppend знал,
-            // где находится текущий "пол" абзаца.
-            LastRowMinY = rowList.Min(t => t.Bounds.MinPoint.Y);
+            MinX = Math.Min(MinX, row.Min(t => t.Bounds.MinPoint.X));
+            MaxX = Math.Max(MaxX, row.Max(t => t.Bounds.MaxPoint.X));
+            MinY = Math.Min(MinY, row.Min(t => t.Bounds.MinPoint.Y));
+            MaxY = Math.Max(MaxY, row.Max(t => t.Bounds.MaxPoint.Y));
+            // Минимум только последней добавленной строки
+            LastRowMinY = row.Min(t => t.Bounds.MinPoint.Y);
         }
     }
 }
