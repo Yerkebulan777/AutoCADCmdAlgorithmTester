@@ -23,9 +23,18 @@ namespace AutoCADCmdAlgorithmTester
         private double MinY { get; set; } = firstRow.Min(t => t.Bounds.MinPoint.Y);
         private double MaxY { get; set; } = firstRow.Max(t => t.Bounds.MaxPoint.Y);
 
+        // Y-координата верха самого первого ряда блока — не меняется при добавлении строк.
+        // Используется для ограничения суммарного вертикального размаха блока.
+        private double BlockOriginMaxY { get; } = firstRow.Max(t => t.Bounds.MaxPoint.Y);
+
         // Нижняя Y-граница последней добавленной строки.
         // Используется в IsCompatible для измерения вертикального разрыва до следующей строки-кандидата.
         private double LastRowMinY { get; set; } = firstRow.Min(t => t.Bounds.MinPoint.Y);
+
+        /// <summary>
+        /// Центр блока по X. Используется для выбора ближайшего блока при кластеризации.
+        /// </summary>
+        public double CenterX => (MinX + MaxX) * 0.5;
 
         /// <summary>
         /// Ширина блока. Используется при создании итогового MText в AutoCAD.
@@ -35,16 +44,22 @@ namespace AutoCADCmdAlgorithmTester
         /// <summary>
         /// Определяет, можно ли добавить <paramref name="row"/> в этот блок.
         ///
-        /// Требуются ОБА условия:
+        /// Требуются ВСЕ три условия:
         ///
         /// 1. X-пересечение (принадлежность к одной колонке):
-        ///    Горизонтальный диапазон строки должен перекрываться с диапазоном блока
-        ///    с допуском blockGapMultiplier × высота_текста.
+        ///    Горизонтальный диапазон строки должен реально перекрываться
+        ///    с расширенным диапазоном блока (с допуском blockGapMultiplier × высота_текста).
+        ///    Используется строгое сравнение (>), чтобы исключить ложные касания на границе.
         ///
         /// 2. Y-близость (вертикальная смежность):
         ///    Верх входящей строки должен быть не ниже
         ///    (нижняя граница последней строки блока − высота_текста × rowGapMultiplier).
         ///    В координатах AutoCAD (Y вверх): rowTopY >= LastRowMinY - maxHeight * rowGapMultiplier.
+        ///
+        /// 3. Суммарный Y-размах блока (сторожевое ограничение):
+        ///    Блок не может расти бесконечно вниз — если размах от верха первой строки
+        ///    до низа кандидата превышает maxBlockHeightMultiplier × высота_текста,
+        ///    строка отклоняется. Это предотвращает слияние колонтитула с заголовком.
         /// </summary>
         /// <param name="row">Строка-кандидат (уже отделённый сегмент горизонтальной строки).</param>
         /// <param name="blockGapMultiplier">
@@ -55,16 +70,31 @@ namespace AutoCADCmdAlgorithmTester
         ///     Допуск для проверки Y-близости, в единицах высоты текста.
         ///     Определяет, насколько большой вертикальный разрыв ещё считается "одним абзацем".
         /// </param>
-        public bool IsCompatible(List<MTextMetrics> row, double blockGapMultiplier, double rowGapMultiplier)
+        /// <param name="maxBlockHeightMultiplier">
+        ///     Максимальный суммарный вертикальный размах блока, в единицах высоты текста.
+        ///     Ограничивает, насколько блок может «сползти» вниз по цепочке строк.
+        /// </param>
+        public bool IsCompatible(
+            List<MTextMetrics> row,
+            double blockGapMultiplier,
+            double rowGapMultiplier,
+            double maxBlockHeightMultiplier = 30.0)
         {
             double maxHeight = row.Max(t => t.Height);
 
-            // --- Проверка пересечения по X ---
+            // --- Проверка пересечения по X (строгая) ---
             double rowMinX = row.Min(t => t.Bounds.MinPoint.X);
             double rowMaxX = row.Max(t => t.Bounds.MaxPoint.X);
             double xTolerance = maxHeight * blockGapMultiplier;
 
-            bool xOverlaps = rowMinX < MaxX + xTolerance && rowMaxX > MinX - xTolerance;
+            // Расширенные диапазоны блока
+            double expandedBlockMinX = MinX - xTolerance;
+            double expandedBlockMaxX = MaxX + xTolerance;
+
+            // Реальное пересечение расширенных диапазонов — строго больше нуля
+            double intersectMin = Math.Max(rowMinX, expandedBlockMinX);
+            double intersectMax = Math.Min(rowMaxX, expandedBlockMaxX);
+            bool xOverlaps = intersectMax > intersectMin;
 
             // --- Проверка близости по Y ---
             // Верх входящей строки (наибольший Y = самая высокая точка в системе Y-вверх).
@@ -75,7 +105,13 @@ namespace AutoCADCmdAlgorithmTester
             // Если разрыв слишком большой — это уже другой раздел чертежа, а не следующая строка.
             bool yIsClose = rowTopY >= LastRowMinY - yTolerance;
 
-            return xOverlaps && yIsClose;
+            // --- Жёсткий предел суммарного Y-размаха блока ---
+            // Блок не может расти бесконечно вниз по цепочке строк.
+            double rowBottomY = row.Min(t => t.Bounds.MinPoint.Y);
+            double maxAllowedSpan = maxHeight * maxBlockHeightMultiplier;
+            bool withinSpan = (BlockOriginMaxY - rowBottomY) <= maxAllowedSpan;
+
+            return xOverlaps && yIsClose && withinSpan;
         }
 
         /// <summary>

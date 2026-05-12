@@ -29,15 +29,22 @@ namespace AutoCADCmdAlgorithmTester
     /// </summary>
     internal sealed partial class MTextJoinerCmd
     {
-        // Максимальный горизонтальный разрыв (в единицах высоты текста) между сегментами строки,
-        // при котором они ещё считаются частью одной колонки.
-        // Тот же множитель используется как допуск X-пересечения при сборке блоков.
-        private const double BLOCK_GAP_MULTIPLIER = 2.5;
+        // Допуск X при разбивке строки на сегменты — только для определения границ колонки.
+        // Разрыв > SEGMENT_GAP_MULTIPLIER × h между соседними фрагментами → новая колонка.
+        private const double SEGMENT_GAP_MULTIPLIER = 1.0;
+
+        // Допуск X при проверке принадлежности сегмента блоку — более строгий,
+        // чтобы блок не «всасывал» соседнюю колонку.
+        // Воронка = ±BLOCK_X_GAP_MULTIPLIER × h на каждую сторону.
+        private const double BLOCK_X_GAP_MULTIPLIER = 0.5;
 
         // Максимальный вертикальный разрыв (в единицах высоты текста) между последовательными
-        // строками одного блока. Намеренно больше BLOCK_GAP_MULTIPLIER: межстрочный интервал
-        // в чертежах часто превышает 2× высоту строки, а параграфы могут иметь ещё больший отступ.
-        private const double BLOCK_ROW_GAP_MULTIPLIER = 3.0;
+        // строками одного блока. Уменьшено с 3.0, чтобы пробел между абзацами не сливал их.
+        private const double BLOCK_ROW_GAP_MULTIPLIER = 1.5;
+
+        // Максимальный суммарный вертикальный размах блока (в единицах высоты текста).
+        // Сторожевое ограничение: колонтитул и заголовок не попадут в один блок.
+        private const double BLOCK_MAX_HEIGHT_MULTIPLIER = 30.0;
 
         // Максимальное Y-расстояние между центроидами (в единицах высоты) для того,
         // чтобы два фрагмента считались на одной горизонтальной строке.
@@ -173,7 +180,11 @@ namespace AutoCADCmdAlgorithmTester
             {
                 foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
                 {
-                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.IsCompatible(segment, BLOCK_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER));
+                    double segCenterX = (segment.Min(t => t.Bounds.MinPoint.X) + segment.Max(t => t.Bounds.MaxPoint.X)) * 0.5;
+
+                    MTextBlock? targetBlock = blocks
+                        .Where(b => b.IsCompatible(segment, BLOCK_X_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER, BLOCK_MAX_HEIGHT_MULTIPLIER))
+                        .MinBy(b => Math.Abs(b.CenterX - segCenterX));
 
                     if (targetBlock is null)
                     {
@@ -270,7 +281,7 @@ namespace AutoCADCmdAlgorithmTester
                 MTextMetrics current = sortedByX[idx];
 
                 double gap = current.Bounds.MinPoint.X - previous.Bounds.MaxPoint.X;
-                double tolerance = Math.Max(previous.Height, current.Height) * BLOCK_GAP_MULTIPLIER;
+                double tolerance = Math.Max(previous.Height, current.Height) * SEGMENT_GAP_MULTIPLIER;
 
                 if (gap > tolerance)
                 {
