@@ -219,6 +219,7 @@ namespace AutoCADCmdAlgorithmTester
         {
             List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.Bounds.MinPoint.X)];
             List<MTextMetrics> currentSegment = [sortedByX[0]];
+
             List<List<MTextMetrics>> segments = [];
 
             for (int idx = 1; idx < sortedByX.Count; idx++)
