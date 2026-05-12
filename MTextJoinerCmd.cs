@@ -64,13 +64,16 @@ namespace AutoCADCmdAlgorithmTester
 
                     foreach (MTextBlock block in blocks)
                     {
-                        // Формируем единую строку с корректными переносами \P и отступами \t
-                        string content = BuildMTextContent(block.Rows);
+                        if (block.Rows.Count > 0)
+                        {
+                            // Формируем единую строку с корректными переносами \P и отступами \t
+                            string content = BuildMTextContent(block.Rows);
 
-                        (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
+                            (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
 
-                        // Создаем новый объединённый MText в чертеже
-                        CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
+                            // Создаем новый объединённый MText в чертеже
+                            CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
+                        }
                     }
 
                     // Удаляем исходные (разрозненные) куски текста
@@ -138,6 +141,45 @@ namespace AutoCADCmdAlgorithmTester
             return false;
         }
 
+
+
+        /// <summary>
+        /// Главный метод кластеризации текстов в абзацы (блоки).
+        /// Алгоритм:
+        /// 1. Разбивает все фрагменты на горизонтальные строки.
+        /// 2. Каждую строку режет на фрагменты (сегменты), если в ней есть большие разрывы.
+        /// 3. "Укладывает" полученные сегменты в блоки (абзацы), проверяя, перекрывается ли сегмент с блоком по оси X.
+        /// </summary>
+        private static List<MTextBlock> ClusterIntoBlocks(List<MTextMetrics> elements)
+        {
+            List<MTextBlock> blocks = [];
+
+            List<List<MTextMetrics>> rows = ClusterIntoRows(elements);
+
+            foreach (List<MTextMetrics> row in rows)
+            {
+                foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
+                {
+                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.CanAppend(segment, BLOCK_GAP_MULTIPLIER));
+
+                    if (targetBlock is null)
+                    {
+                        blocks.Add(new MTextBlock(segment));
+                    }
+                    else
+                    {
+                        targetBlock.Append(segment);
+                    }
+                }
+            }
+
+            return blocks;
+        }
+
+        /// <summary>
+        /// Кластеризует фрагменты текста в строки, основываясь на их Y-координате.
+        /// Фрагменты, центроиды которых находятся на близкой Y-координате, объединяются в одну строку.
+        /// </summary>
         private static List<List<MTextMetrics>> ClusterIntoRows(List<MTextMetrics> elements)
         {
             List<MTextMetrics> sortedByY = [.. elements.OrderByDescending(t => t.Centroid.Y)];
@@ -166,38 +208,6 @@ namespace AutoCADCmdAlgorithmTester
 
             rows.Add(currentRow);
             return rows;
-        }
-
-        /// <summary>
-        /// Главный метод кластеризации текстов в абзацы (блоки).
-        /// Алгоритм:
-        /// 1. Разбивает все фрагменты на горизонтальные строки.
-        /// 2. Каждую строку режет на фрагменты (сегменты), если в ней есть большие разрывы.
-        /// 3. "Укладывает" полученные сегменты в блоки (абзацы), проверяя, перекрывается ли сегмент с блоком по оси X.
-        /// </summary>
-        private static List<MTextBlock> ClusterIntoBlocks(List<MTextMetrics> elements)
-        {
-            List<List<MTextMetrics>> rows = ClusterIntoRows(elements);
-            List<MTextBlock> blocks = [];
-
-            foreach (List<MTextMetrics> row in rows)
-            {
-                foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
-                {
-                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.CanAppend(segment, BLOCK_GAP_MULTIPLIER));
-
-                    if (targetBlock is null)
-                    {
-                        blocks.Add(new MTextBlock(segment));
-                    }
-                    else
-                    {
-                        targetBlock.Append(segment);
-                    }
-                }
-            }
-
-            return blocks;
         }
 
         /// <summary>
@@ -280,8 +290,7 @@ namespace AutoCADCmdAlgorithmTester
         {
             double minX = double.MaxValue;
             var elements = rows.SelectMany(row => row);
-            MTextMetrics? topElement = elements.FirstOrDefault();
-            ArgumentNullException.ThrowIfNull(topElement, "Невозможно определить точку привязки!");
+            MTextMetrics topElement = elements.First();
 
             foreach (MTextMetrics item in elements)
             {
