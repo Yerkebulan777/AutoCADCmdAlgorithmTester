@@ -204,14 +204,14 @@ namespace AutoCADCmdAlgorithmTester
         private static List<List<MTextMetrics>> ClusterIntoRows(List<MTextMetrics> elements)
         {
             List<MTextMetrics> sortedByY = [.. elements.OrderByDescending(t => t.Centroid.Y)];
-
             List<MTextMetrics> currentRow = [sortedByY[0]];
+
             List<List<MTextMetrics>> rows = [];
 
             // Текущий Y-диапазон и максимальная высота строки — расширяются при каждом добавлении.
             double rowMinCentroidY = sortedByY[0].Centroid.Y;
             double rowMaxCentroidY = sortedByY[0].Centroid.Y;
-            double rowMaxHeight    = sortedByY[0].Height;
+            double rowMaxHeight = sortedByY[0].Height;
 
             for (int idx = 1; idx < sortedByY.Count; idx++)
             {
