@@ -40,36 +40,37 @@ namespace AutoCADCmdAlgorithmTester
 
             List<MTextMetrics> textElements = SelectAndExtractMTexts(ed, db);
 
-            if (textElements.Count == 0) return;
-
-            // Группируем по слою и стилю, чтобы в один абзац не попали тексты с разным оформлением.
-            IEnumerable<IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics>> groups =
-                textElements.GroupBy(t => (t.LayerId, t.StyleId));
-
-            using Transaction trx = db.TransactionManager.StartTransaction();
-            BlockTableRecord currentSpace = (BlockTableRecord)trx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-            foreach (IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics> group in groups)
+            if (textElements.Count > 0)
             {
-                List<MTextMetrics> groupElements = [.. group];
-                List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
+                // Группируем по слою и стилю, чтобы в один абзац не попали тексты с разным оформлением.
+                IEnumerable<IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics>> groups = textElements.GroupBy(t => (t.LayerId, t.StyleId));
 
-                foreach (MTextBlock block in blocks)
+                using Transaction trx = db.TransactionManager.StartTransaction();
+
+                BlockTableRecord currentSpace = (BlockTableRecord)trx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                foreach (IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics> group in groups)
                 {
-                    if (block.Rows.Count == 0) continue;
+                    List<MTextMetrics> groupElements = [.. group];
+                    List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
 
-                    string content = BuildMTextContent(block.Rows);
-                    (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
-                    CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
+                    foreach (MTextBlock block in blocks)
+                    {
+                        if (block.Rows.Count != 0)
+                        {
+                            string content = BuildMTextContent(block.Rows);
+                            (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
+                            CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
+                        }
+                    }
+
+                    EraseOriginals(trx, groupElements);
                 }
 
-                EraseOriginals(trx, groupElements);
+                trx.Commit();
+                ed.WriteMessage($"\nГОТОВО!");
             }
-
-            trx.Commit();
-            ed.WriteMessage($"\nГОТОВО!");
         }
-
 
         private static List<MTextMetrics> SelectAndExtractMTexts(Editor ed, Database db)
         {
@@ -81,7 +82,10 @@ namespace AutoCADCmdAlgorithmTester
             };
 
             PromptSelectionResult psr = ed.GetSelection(pso, selFilter);
-            if (psr.Status != PromptStatus.OK) return [];
+            if (psr.Status != PromptStatus.OK)
+            {
+                return [];
+            }
 
             using Transaction trx = db.TransactionManager.StartTransaction();
             List<MTextMetrics> result = [];
@@ -107,7 +111,10 @@ namespace AutoCADCmdAlgorithmTester
             ext = default;
             centroid = Point3d.Origin;
 
-            if (!mText.Bounds.HasValue) return false;
+            if (!mText.Bounds.HasValue)
+            {
+                return false;
+            }
 
             ext = mText.Bounds.Value;
             centroid = new Point3d(
@@ -141,9 +148,13 @@ namespace AutoCADCmdAlgorithmTester
                         .MinBy(b => Math.Abs(b.CenterX - segCenterX));
 
                     if (target is null)
+                    {
                         blocks.Add(new MTextBlock(segment));
+                    }
                     else
+                    {
                         target.Append(segment);
+                    }
                 }
             }
 
@@ -250,18 +261,21 @@ namespace AutoCADCmdAlgorithmTester
 
             for (int rowIdx = 0; rowIdx < rows.Count; rowIdx++)
             {
-                if (rowIdx > 0) sb.Append("\\P");
+                if (rowIdx > 0)
+                {
+                    _ = sb.Append("\\P");
+                }
 
                 List<MTextMetrics> row = rows[rowIdx];
                 for (int idx = 0; idx < row.Count; idx++)
                 {
-                    sb.Append(row[idx].RawText);
+                    _ = sb.Append(row[idx].RawText);
 
                     if (idx < row.Count - 1)
                     {
                         double distanceX = Math.Max(0, row[idx + 1].Bounds.MinPoint.X - row[idx].Bounds.MaxPoint.X);
                         double textWidth = row[idx].Bounds.MaxPoint.X - row[idx].Bounds.MinPoint.X;
-                        sb.Append(distanceX > textWidth * MTextJoinerConfig.TabInsertionMultiplier ? "\\t" : " ");
+                        _ = sb.Append(distanceX > textWidth * MTextJoinerConfig.TabInsertionMultiplier ? "\\t" : " ");
                     }
                 }
             }
@@ -299,7 +313,7 @@ namespace AutoCADCmdAlgorithmTester
             };
 
             result.SetDatabaseDefaults();
-            currentSpace.AppendEntity(result);
+            _ = currentSpace.AppendEntity(result);
             trx.AddNewlyCreatedDBObject(result, true);
         }
 
