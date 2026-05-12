@@ -42,7 +42,7 @@ namespace AutoCADCmdAlgorithmTester
 
             PromptSelectionOptions pso = new()
             {
-                MessageForAdding = "\nВыберите разрозненные MText для интеллектуального объединения: "
+                MessageForAdding = "\nВыберите MText для интеллектуального объединения"
             };
 
             PromptSelectionResult psr = ed.GetSelection(pso, selFilter);
@@ -162,14 +162,14 @@ namespace AutoCADCmdAlgorithmTester
                             _ = mTextBuilder.Append("\\P");
                         }
 
-                        for (int i = 0; i < sortedHorizontally.Count; i++)
+                        for (int idx = 0; idx < sortedHorizontally.Count; idx++)
                         {
-                            _ = mTextBuilder.Append(sortedHorizontally[i].RawText);
+                            _ = mTextBuilder.Append(sortedHorizontally[idx].RawText);
 
-                            if (i < sortedHorizontally.Count - 1)
+                            if (idx < sortedHorizontally.Count - 1)
                             {
-                                MTextMetrics currentWord = sortedHorizontally[i];
-                                MTextMetrics nextWord = sortedHorizontally[i + 1];
+                                MTextMetrics currentWord = sortedHorizontally[idx];
+                                MTextMetrics nextWord = sortedHorizontally[idx + 1];
 
                                 double distanceX = Math.Abs(nextWord.TopLeftPt.X - currentWord.TopLeftPt.X);
 
