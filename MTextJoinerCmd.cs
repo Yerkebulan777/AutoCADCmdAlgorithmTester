@@ -26,47 +26,19 @@ namespace AutoCADCmdAlgorithmTester
         ObjectId StyleId,
         double Rotation);
 
-    public sealed class MTextJoinerCmd
+    /// <summary>
+    /// Основной класс команды для интеллектуального объединения разрозненных MText в единые текстовые блоки (абзацы).
+    /// Алгоритм группирует тексты по слою/стилю, затем по строкам (Y), разбивает строки на колонки (X) 
+    /// и собирает пересекающиеся по горизонтали колонки в связные абзацы текста.
+    /// </summary>
+    public sealed partial class MTextJoinerCmd
     {
-        private const double Y_TOLERANCE_MULTIPLIER = 0.5;
-        private const double TAB_INSERTION_MULTIPLIER = 1.5;
+        // Множитель для определения максимального допустимого разрыва между колонками/сегментами по горизонтали
         private const double BLOCK_GAP_MULTIPLIER = 2.5;
-
-        private sealed class MTextBlock
-        {
-            public MTextBlock(List<MTextMetrics> firstRow)
-            {
-                Rows.Add(firstRow);
-                RefreshBounds(firstRow);
-            }
-
-            public List<List<MTextMetrics>> Rows { get; } = [];
-
-            private double MinX { get; set; } = double.MaxValue;
-
-            private double MaxX { get; set; } = double.MinValue;
-
-            public bool CanAppend(List<MTextMetrics> row)
-            {
-                double tolerance = row.Max(t => t.Height) * BLOCK_GAP_MULTIPLIER;
-                double rowMinX = row.Min(t => t.MinX);
-                double rowMaxX = row.Max(t => t.MaxX);
-
-                return rowMinX <= MaxX + tolerance && rowMaxX >= MinX - tolerance;
-            }
-
-            public void Append(List<MTextMetrics> row)
-            {
-                Rows.Add(row);
-                RefreshBounds(row);
-            }
-
-            private void RefreshBounds(IEnumerable<MTextMetrics> row)
-            {
-                MinX = Math.Min(MinX, row.Min(t => t.MinX));
-                MaxX = Math.Max(MaxX, row.Max(t => t.MaxX));
-            }
-        }
+        // Множитель для объединения текстов в одну строку (допуск по оси Y от высоты текста)
+        private const double Y_TOLERANCE_MULTIPLIER = 0.5;
+        // Множитель для вставки табуляции вместо пробела между фрагментами в одной строке
+        private const double TAB_INSERTION_MULTIPLIER = 1.5;
 
 
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
@@ -78,12 +50,14 @@ namespace AutoCADCmdAlgorithmTester
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
+            // 1. Запрашиваем у пользователя выбор текстов и извлекаем их метрики (координаты, габариты, слои)
             List<MTextMetrics> textElements = SelectAndExtractMTexts(ed, db);
 
             if (textElements.Count > 0)
             {
                 int createdCount = 0;
 
+                // 2. Группируем элементы по слою и стилю, чтобы в один абзац не попали тексты с разным оформлением
                 IEnumerable<IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics>> groupedByLayerAndStyle = textElements.GroupBy(t => (t.LayerId, t.StyleId));
 
                 using Transaction trx = db.TransactionManager.StartTransaction();
@@ -94,18 +68,21 @@ namespace AutoCADCmdAlgorithmTester
                 {
                     List<MTextMetrics> groupElements = [.. group];
 
+                    // 3. Главный этап алгоритма: кластеризуем тексты внутри группы в логические абзацы (блоки)
                     List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
 
                     foreach (MTextBlock block in blocks)
                     {
+                        // 4. Формируем единую строку с корректными переносами \P и отступами \t
                         string content = BuildMTextContent(block.Rows);
-                        Point3d insertionPoint = GetInsertionPoint(block.Rows);
-                        MTextMetrics template = GetTemplate(block.Rows);
+                        (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
 
-                        CreateResultMText(currentSpace, trx, content, template, insertionPoint);
+                        // 5. Создаем новый объединённый MText в чертеже
+                        CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
                         createdCount++;
                     }
 
+                    // 6. Удаляем исходные (разрозненные) куски текста
                     EraseOriginals(trx, groupElements);
                 }
 
@@ -172,6 +149,11 @@ namespace AutoCADCmdAlgorithmTester
             return false;
         }
 
+        /// <summary>
+        /// 1-й этап нормализации: Кластеризует тексты по строкам с учетом их координаты Y (центроидов).
+        /// Идет сверху вниз. Если следующий элемент попадает в допуск текущей высоты строки, 
+        /// он добавляется в ту же строку, если нет — начинается новая строка.
+        /// </summary>
         private static List<List<MTextMetrics>> ClusterIntoRows(List<MTextMetrics> elements)
         {
             List<MTextMetrics> sortedByY = [.. elements.OrderByDescending(t => t.Centroid.Y)];
@@ -181,11 +163,11 @@ namespace AutoCADCmdAlgorithmTester
             for (int idx = 1; idx < sortedByY.Count; idx++)
             {
                 MTextMetrics current = sortedByY[idx];
-                MTextMetrics previous = currentRow[^1];
+                MTextMetrics anchor = currentRow[0];
 
-                double tolerance = current.Height * Y_TOLERANCE_MULTIPLIER;
+                double tolerance = Math.Max(current.Height, anchor.Height) * Y_TOLERANCE_MULTIPLIER;
 
-                double distance = Math.Abs(previous.Centroid.Y - current.Centroid.Y);
+                double distance = Math.Abs(anchor.Centroid.Y - current.Centroid.Y);
 
                 if (distance < tolerance)
                 {
@@ -202,6 +184,13 @@ namespace AutoCADCmdAlgorithmTester
             return rows;
         }
 
+        /// <summary>
+        /// Главный метод кластеризации текстов в абзацы (блоки).
+        /// Алгоритм:
+        /// 1. Разбивает все фрагменты на горизонтальные строки.
+        /// 2. Каждую строку режет на фрагменты (сегменты), если в ней есть большие разрывы.
+        /// 3. "Укладывает" полученные сегменты в блоки (абзацы), проверяя, перекрывается ли сегмент с блоком по оси X.
+        /// </summary>
         private static List<MTextBlock> ClusterIntoBlocks(List<MTextMetrics> elements)
         {
             List<List<MTextMetrics>> rows = ClusterIntoRows(elements);
@@ -227,6 +216,11 @@ namespace AutoCADCmdAlgorithmTester
             return blocks;
         }
 
+        /// <summary>
+        /// 2-й этап нормализации: Разбивает строку на несколько сегментов, если расстояние (X) 
+        /// между соседними фрагментами в строке больше допустимого разрыва.
+        /// Таким образом строки, визуально разбитые на разные столбцы таблицы/текста, разделяются.
+        /// </summary>
         private static List<List<MTextMetrics>> SplitRowIntoSegments(List<MTextMetrics> row)
         {
             List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.MinX)];
@@ -256,6 +250,10 @@ namespace AutoCADCmdAlgorithmTester
             return segments;
         }
 
+        /// <summary>
+        /// Формирует итоговый текст (с использованием спецсимволов MText).
+        /// Вместо пробелов при больших разрывах ставится табуляция (\t), а все новые строки начинаются с символа переноса (\P).
+        /// </summary>
         private static string BuildMTextContent(List<List<MTextMetrics>> rows)
         {
             bool isFirstRow = true;
@@ -263,25 +261,24 @@ namespace AutoCADCmdAlgorithmTester
 
             foreach (List<MTextMetrics> row in rows)
             {
-                List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.MinX)];
-
                 if (!isFirstRow)
                 {
-                    sb.Append("\\P"); // Добавляется перенос строки перед каждым новым рядом текста
+                    sb.Append("\\P");
                 }
 
-                for (int idx = 0; idx < sortedByX.Count; idx++)
+                for (int idx = 0; idx < row.Count; idx++)
                 {
-                    sb.Append(sortedByX[idx].RawText);
+                    sb.Append(row[idx].RawText);
 
-                    if (idx < sortedByX.Count - 1)
+                    if (idx < row.Count - 1)
                     {
-                        MTextMetrics current = sortedByX[idx];
-                        MTextMetrics next = sortedByX[idx + 1];
+                        MTextMetrics current = row[idx];
+                        MTextMetrics next = row[idx + 1];
 
                         double distanceX = Math.Max(0, next.MinX - current.MaxX);
+                        double textWidth = current.MaxX - current.MinX;
 
-                        bool isTab = distanceX > current.Height * current.RawText.Length * TAB_INSERTION_MULTIPLIER;
+                        bool isTab = distanceX > textWidth * TAB_INSERTION_MULTIPLIER;
                         _ = sb.Append(isTab ? "\\t" : " ");
                     }
                 }
@@ -295,30 +292,24 @@ namespace AutoCADCmdAlgorithmTester
             return sb.ToString();
         }
 
-        private static Point3d GetInsertionPoint(List<List<MTextMetrics>> rows)
+        private static (Point3d InsertionPoint, MTextMetrics Template) GetBlockAnchor(List<List<MTextMetrics>> rows)
         {
-            double minX = rows.SelectMany(row => row).Min(t => t.MinX);
-            MTextMetrics topElement = rows
-                .SelectMany(row => row)
-                .OrderByDescending(t => t.MaxY)
-                .ThenBy(t => t.MinX)
-                .First();
+            double minX = double.MaxValue;
+            MTextMetrics? topElement = null;
 
-            return new Point3d(minX, topElement.MaxY, topElement.TopLeftPt.Z);
-        }
+            foreach (MTextMetrics m in rows.SelectMany(row => row))
+            {
+                if (m.MinX < minX) minX = m.MinX;
+                if (topElement is null || m.MaxY > topElement.MaxY || (m.MaxY == topElement.MaxY && m.MinX < topElement.MinX))
+                    topElement = m;
+            }
 
-        private static MTextMetrics GetTemplate(List<List<MTextMetrics>> rows)
-        {
-            return rows
-                .SelectMany(row => row)
-                .OrderByDescending(t => t.MaxY)
-                .ThenBy(t => t.MinX)
-                .First();
+            return (new Point3d(minX, topElement!.MaxY, topElement.TopLeftPt.Z), topElement);
         }
 
         private static void CreateResultMText(
             BlockTableRecord currentSpace, Transaction trx,
-            string content, MTextMetrics template, Point3d insertionPoint)
+            string content, MTextMetrics template, Point3d insertionPoint, double width)
         {
             MText result = new()
             {
@@ -328,6 +319,7 @@ namespace AutoCADCmdAlgorithmTester
                 LayerId = template.LayerId,
                 TextStyleId = template.StyleId,
                 Rotation = template.Rotation,
+                Width = width,
                 Attachment = AttachmentPoint.TopLeft
             };
             result.SetDatabaseDefaults();
