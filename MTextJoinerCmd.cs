@@ -279,39 +279,35 @@ namespace AutoCADCmdAlgorithmTester
         private static (Point3d InsertionPoint, MTextMetrics Template) GetBlockAnchor(List<List<MTextMetrics>> rows)
         {
             double minX = double.MaxValue;
-            MTextMetrics? topElement = null;
+            var elements = rows.SelectMany(row => row);
+            MTextMetrics? topElement = elements.FirstOrDefault();
+            ArgumentNullException.ThrowIfNull(topElement, "Невозможно определить точку привязки!");
 
-            foreach (MTextMetrics item in rows.SelectMany(row => row))
+            foreach (MTextMetrics item in elements)
             {
-                Point3d itemBottom = item.Bounds.MinPoint;
                 Point3d itemTop = item.Bounds.MaxPoint;
+                Point3d itemBottom = item.Bounds.MinPoint;
+                Point3d topElementTop = topElement.Bounds.MaxPoint;
+                Point3d topElementBottom = topElement.Bounds.MinPoint;
 
+                // Выбираем элемент с наименьшей X-координатой нижней границы.
                 if (itemBottom.X < minX)
                 {
                     minX = itemBottom.X;
                 }
-                if (topElement is null)
+
+                // Выбираем элемент с наибольшей Y-координатой верхней границы.
+                if (itemTop.Y > topElementTop.Y)
                 {
                     topElement = item;
                 }
-                else if (topElement is MTextMetrics)
+
+                // Если верхние границы по Y совпадают, то выбираем элемент, у которого нижняя граница находится левее.
+                if (itemTop.Y == topElementTop.Y && itemBottom.X < topElementBottom.X)
                 {
-                    Point3d topElementTop = topElement.Bounds.MaxPoint;
-                    Point3d topElementBottom = topElement.Bounds.MinPoint;
-                    // Выбираем элемент с наибольшей Y-координатой верхней границы.
-                    if (itemTop.Y > topElementTop.Y)
-                    {
-                        topElement = item;
-                    }
-                    // Если верхние границы по Y совпадают, то выбираем элемент, у которого нижняя граница находится левее.
-                    else if (itemTop.Y == topElementTop.Y && itemBottom.X < topElementBottom.X)
-                    {
-                        topElement = item;
-                    }
+                    topElement = item;
                 }
             }
-
-            ArgumentNullException.ThrowIfNull(topElement, "Невозможно определить точку привязки!");
 
             Point3d insertionPoint = new(minX, topElement.Bounds.MaxPoint.Y, topElement.Centroid.Z);
 
