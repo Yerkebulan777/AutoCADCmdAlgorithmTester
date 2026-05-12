@@ -240,10 +240,10 @@ namespace AutoCADCmdAlgorithmTester
                 {
                     // Кандидат слишком далеко — закрываем текущую строку, начинаем новую.
                     rows.Add(currentRow);
-                    currentRow      = [current];
+                    currentRow = [current];
+                    rowMaxHeight = current.Height;
                     rowMinCentroidY = current.Centroid.Y;
                     rowMaxCentroidY = current.Centroid.Y;
-                    rowMaxHeight    = current.Height;
                 }
             }
 
