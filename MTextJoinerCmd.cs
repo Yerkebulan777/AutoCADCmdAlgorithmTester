@@ -14,10 +14,10 @@ namespace AutoCADCmdAlgorithmTester
 {
     internal record MTextMetrics(
         ObjectId Id,
+        double Height,
         string RawText,
         Point3d Centroid,
         Extents3d Bounds,
-        double Height,
         ObjectId LayerId,
         ObjectId StyleId,
         double Rotation);
@@ -124,8 +124,8 @@ namespace AutoCADCmdAlgorithmTester
                 if (dbObj is MText mText && TryGetBounds(mText, out Point3d centroid, out Extents3d ext))
                 {
                     result.Add(new MTextMetrics(
-                        mText.ObjectId, mText.Text, centroid, ext,
-                        mText.TextHeight, mText.LayerId, mText.TextStyleId, mText.Rotation));
+                        mText.ObjectId, mText.TextHeight, mText.Text, centroid,
+                        ext, mText.LayerId, mText.TextStyleId, mText.Rotation));
                 }
             }
 
@@ -197,7 +197,6 @@ namespace AutoCADCmdAlgorithmTester
         /// накопленное смещение разрывает то, что должно быть единой строкой.
         /// Отслеживание текущего диапазона [rowMinCentroidY, rowMaxCentroidY] и максимальной
         /// высоты строки даёт стабильную, устойчивую к дрейфу границу.
-        ///
         /// Строки выдаются в порядке сверху вниз (убывающий Y), чтобы ClusterIntoBlocks
         /// обрабатывал документ от заголовка к нижней части листа.
         /// </summary>
@@ -234,7 +233,7 @@ namespace AutoCADCmdAlgorithmTester
                     currentRow.Add(current);
                     rowMinCentroidY = Math.Min(rowMinCentroidY, current.Centroid.Y);
                     rowMaxCentroidY = Math.Max(rowMaxCentroidY, current.Centroid.Y);
-                    rowMaxHeight    = Math.Max(rowMaxHeight, current.Height);
+                    rowMaxHeight = Math.Max(rowMaxHeight, current.Height);
                 }
                 else
                 {
