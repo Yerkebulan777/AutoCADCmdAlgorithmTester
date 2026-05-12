@@ -74,16 +74,12 @@ namespace AutoCADCmdAlgorithmTester
         ///     Максимальный суммарный вертикальный размах блока, в единицах высоты текста.
         ///     Ограничивает, насколько блок может «сползти» вниз по цепочке строк.
         /// </param>
-        public bool IsCompatible(
-            List<MTextMetrics> row,
-            double blockXTolerance,
-            double blockYTolerance,
-            double maxBlockHeightMultiplier = 30.0)
+        public bool IsCompatible(List<MTextMetrics> row, double blockXTolerance, double blockYTolerance, double maxBlockHeightMultiplier = MTextJoinerConfig.BlockMaxHeightMultiplier)
         {
             double maxHeight = row.Max(t => t.Height);
 
             // Защита от аномального текста с нулевой/почти нулевой высотой.
-            if (maxHeight < 0.01) return false;
+            if (maxHeight < MTextJoinerConfig.MinTextHeight) return false;
 
             // --- Проверка пересечения по X (строгая) ---
             double rowMinX = row.Min(t => t.Bounds.MinPoint.X);
@@ -98,10 +94,10 @@ namespace AutoCADCmdAlgorithmTester
             double overlapMin = Math.Max(rowMinX, blockMinExpanded);
             double overlapMax = Math.Min(rowMaxX, blockMaxExpanded);
 
-            // Минимальное перекрытие — хотя бы 20% ширины меньшего из двух.
+            // Минимальное перекрытие — хотя бы MinXOverlapFraction ширины меньшего из двух.
             // Исключает ложные касания на границе, когда два соседних блока
             // случайно попадают в расширенную зону.
-            double minOverlapRequired = Math.Min(rowMaxX - rowMinX, MaxX - MinX) * 0.2;
+            double minOverlapRequired = Math.Min(rowMaxX - rowMinX, MaxX - MinX) * MTextJoinerConfig.MinXOverlapFraction;
             bool xOverlaps = (overlapMax - overlapMin) >= minOverlapRequired;
 
             // --- Проверка близости по Y ---

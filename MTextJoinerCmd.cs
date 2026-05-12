@@ -1,4 +1,4 @@
-﻿using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
@@ -29,31 +29,6 @@ namespace AutoCADCmdAlgorithmTester
     /// </summary>
     internal sealed partial class MTextJoinerCmd
     {
-        // Минимальный X-зазор для разделения строки на колонки.
-        // Разрыв > COLUMN_GAP_MULTIPLIER × h между соседними фрагментами → новая колонка.
-        private const double COLUMN_GAP_MULTIPLIER = 0.5;
-
-        // Допуск X-перекрытия при проверке принадлежности сегмента блоку —
-        // строгий, чтобы блок не «всасывал» соседнюю колонку.
-        private const double BLOCK_X_TOLERANCE_MULTIPLIER = 0.2;
-
-        // Допуск Y-близости (в единицах высоты текста) между последовательными
-        // строками одного блока. Уменьшено с 3.0, чтобы пробел между абзацами не сливал их.
-        private const double BLOCK_Y_TOLERANCE_MULTIPLIER = 0.8;
-
-        // Максимальный суммарный вертикальный размах блока (в единицах высоты текста).
-        // Сторожевое ограничение: колонтитул и заголовок не попадут в один блок.
-        private const double BLOCK_MAX_HEIGHT_MULTIPLIER = 30.0;
-
-        // Допуск Y-расстояния между центроидами (в единицах высоты) для того,
-        // чтобы два фрагмента считались на одной горизонтальной строке.
-        private const double ROW_Y_TOLERANCE_MULTIPLIER = 0.3;
-
-        // Отношение разрыва к ширине текущего фрагмента, при превышении которого
-        // вместо пробела вставляется табуляция (\t) в итоговом MText.
-        private const double TAB_INSERTION_MULTIPLIER = 1.5;
-
-
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
         public static void SmartJoinCommand()
         {
@@ -65,43 +40,34 @@ namespace AutoCADCmdAlgorithmTester
 
             List<MTextMetrics> textElements = SelectAndExtractMTexts(ed, db);
 
-            if (textElements.Count > 0)
+            if (textElements.Count == 0) return;
+
+            // Группируем по слою и стилю, чтобы в один абзац не попали тексты с разным оформлением.
+            IEnumerable<IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics>> groups =
+                textElements.GroupBy(t => (t.LayerId, t.StyleId));
+
+            using Transaction trx = db.TransactionManager.StartTransaction();
+            BlockTableRecord currentSpace = (BlockTableRecord)trx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+            foreach (IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics> group in groups)
             {
-                //  Группируем элементы по слою и стилю, чтобы в один абзац не попали тексты с разным оформлением
-                IEnumerable<IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics>> groupedByLayerAndStyle = textElements.GroupBy(t => (t.LayerId, t.StyleId));
+                List<MTextMetrics> groupElements = [.. group];
+                List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
 
-                using Transaction trx = db.TransactionManager.StartTransaction();
-
-                BlockTableRecord currentSpace = (BlockTableRecord)trx.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                foreach (IGrouping<(ObjectId LayerId, ObjectId StyleId), MTextMetrics> group in groupedByLayerAndStyle)
+                foreach (MTextBlock block in blocks)
                 {
-                    List<MTextMetrics> groupElements = [.. group];
+                    if (block.Rows.Count == 0) continue;
 
-                    List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
-
-                    foreach (MTextBlock block in blocks)
-                    {
-                        if (block.Rows.Count > 0)
-                        {
-                            // Формируем единую строку с корректными переносами \P и отступами \t
-                            string content = BuildMTextContent(block.Rows);
-
-                            (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
-
-                            // Создаем новый объединённый MText в чертеже
-                            CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
-                        }
-                    }
-
-                    // Удаляем исходные (разрозненные) куски текста
-                    EraseOriginals(trx, groupElements);
+                    string content = BuildMTextContent(block.Rows);
+                    (Point3d insertionPoint, MTextMetrics template) = GetBlockAnchor(block.Rows);
+                    CreateResultMText(currentSpace, trx, content, template, insertionPoint, block.Width);
                 }
 
-                trx.Commit();
-
-                ed.WriteMessage($"\nГОТОВО!");
+                EraseOriginals(trx, groupElements);
             }
+
+            trx.Commit();
+            ed.WriteMessage($"\nГОТОВО!");
         }
 
 
@@ -115,13 +81,9 @@ namespace AutoCADCmdAlgorithmTester
             };
 
             PromptSelectionResult psr = ed.GetSelection(pso, selFilter);
-            if (psr.Status != PromptStatus.OK)
-            {
-                return [];
-            }
+            if (psr.Status != PromptStatus.OK) return [];
 
             using Transaction trx = db.TransactionManager.StartTransaction();
-
             List<MTextMetrics> result = [];
 
             foreach (SelectedObject selObj in psr.Value)
@@ -145,20 +107,16 @@ namespace AutoCADCmdAlgorithmTester
             ext = default;
             centroid = Point3d.Origin;
 
-            if (mText.Bounds.HasValue)
-            {
-                ext = mText.Bounds.Value;
-                centroid = new Point3d(
-                    (ext.MaxPoint.X + ext.MinPoint.X) * 0.5,
-                    (ext.MaxPoint.Y + ext.MinPoint.Y) * 0.5,
-                    ext.MinPoint.Z);
+            if (!mText.Bounds.HasValue) return false;
 
-                return true;
-            }
+            ext = mText.Bounds.Value;
+            centroid = new Point3d(
+                (ext.MaxPoint.X + ext.MinPoint.X) * 0.5,
+                (ext.MaxPoint.Y + ext.MinPoint.Y) * 0.5,
+                ext.MinPoint.Z);
 
-            return false;
+            return true;
         }
-
 
 
         /// <summary>
@@ -172,26 +130,20 @@ namespace AutoCADCmdAlgorithmTester
         {
             List<MTextBlock> blocks = [];
 
-            List<List<MTextMetrics>> rows = ClusterIntoRows(elements);
-
-            foreach (List<MTextMetrics> row in rows)
+            foreach (List<MTextMetrics> row in ClusterIntoRows(elements))
             {
                 foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
                 {
                     double segCenterX = (segment.Min(t => t.Bounds.MinPoint.X) + segment.Max(t => t.Bounds.MaxPoint.X)) * 0.5;
 
-                    MTextBlock? targetBlock = blocks
-                                            .Where(b => b.IsCompatible(segment, BLOCK_X_TOLERANCE_MULTIPLIER, BLOCK_Y_TOLERANCE_MULTIPLIER, BLOCK_MAX_HEIGHT_MULTIPLIER))
+                    MTextBlock? target = blocks
+                        .Where(b => b.IsCompatible(segment, MTextJoinerConfig.BlockXToleranceMultiplier, MTextJoinerConfig.BlockYToleranceMultiplier))
                         .MinBy(b => Math.Abs(b.CenterX - segCenterX));
 
-                    if (targetBlock is null)
-                    {
+                    if (target is null)
                         blocks.Add(new MTextBlock(segment));
-                    }
                     else
-                    {
-                        targetBlock.Append(segment);
-                    }
+                        target.Append(segment);
                 }
             }
 
@@ -213,13 +165,9 @@ namespace AutoCADCmdAlgorithmTester
         /// </summary>
         private static List<List<MTextMetrics>> ClusterIntoRows(List<MTextMetrics> elements)
         {
-            // Текущий Y-диапазон и максимальная высота строки — расширяются при каждом добавлении.
             List<MTextMetrics> sortedByY = [.. elements.OrderByDescending(t => t.Centroid.Y)];
             List<MTextMetrics> currentRow = [sortedByY[0]];
-
             List<List<MTextMetrics>> rows = [];
-
-            double rowMaxHeight = sortedByY[0].Height;
 
             double rowMinCentroidY = sortedByY[0].Centroid.Y;
             double rowMaxCentroidY = sortedByY[0].Centroid.Y;
@@ -231,7 +179,7 @@ namespace AutoCADCmdAlgorithmTester
                 // Допуск берём только от высоты текущего кандидата (консервативный подход).
                 // Высота уже добавленных элементов не должна влиять на приём нового —
                 // крупный заголовок не должен раздувать допуск и притягивать следующую строку.
-                double tolerance = current.Height * ROW_Y_TOLERANCE_MULTIPLIER;
+                double tolerance = current.Height * MTextJoinerConfig.RowYToleranceMultiplier;
 
                 // Расстояние до ближайшего края диапазона строки, а не до фиксированного якоря.
                 // Если кандидат внутри [rowMinCentroidY, rowMaxCentroidY] — расстояние равно 0.
@@ -241,18 +189,14 @@ namespace AutoCADCmdAlgorithmTester
 
                 if (distanceToRange < tolerance)
                 {
-                    // Кандидат принадлежит текущей строке — расширяем диапазон.
                     currentRow.Add(current);
                     rowMinCentroidY = Math.Min(rowMinCentroidY, current.Centroid.Y);
                     rowMaxCentroidY = Math.Max(rowMaxCentroidY, current.Centroid.Y);
-                    rowMaxHeight = Math.Max(rowMaxHeight, current.Height);
                 }
                 else
                 {
-                    // Кандидат слишком далеко — закрываем текущую строку, начинаем новую.
                     rows.Add(currentRow);
                     currentRow = [current];
-                    rowMaxHeight = current.Height;
                     rowMinCentroidY = current.Centroid.Y;
                     rowMaxCentroidY = current.Centroid.Y;
                 }
@@ -271,7 +215,6 @@ namespace AutoCADCmdAlgorithmTester
         {
             List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.Bounds.MinPoint.X)];
             List<MTextMetrics> currentSegment = [sortedByX[0]];
-
             List<List<MTextMetrics>> segments = [];
 
             for (int idx = 1; idx < sortedByX.Count; idx++)
@@ -280,7 +223,7 @@ namespace AutoCADCmdAlgorithmTester
                 MTextMetrics current = sortedByX[idx];
 
                 double gap = current.Bounds.MinPoint.X - previous.Bounds.MaxPoint.X;
-                double tolerance = Math.Max(previous.Height, current.Height) * COLUMN_GAP_MULTIPLIER;
+                double tolerance = Math.Max(previous.Height, current.Height) * MTextJoinerConfig.ColumnGapMultiplier;
 
                 if (gap > tolerance)
                 {
@@ -303,36 +246,23 @@ namespace AutoCADCmdAlgorithmTester
         /// </summary>
         private static string BuildMTextContent(List<List<MTextMetrics>> rows)
         {
-            bool isFirstRow = true;
             StringBuilder sb = new();
 
-            foreach (List<MTextMetrics> row in rows)
+            for (int rowIdx = 0; rowIdx < rows.Count; rowIdx++)
             {
-                if (!isFirstRow)
-                {
-                    _ = sb.Append("\\P");
-                }
+                if (rowIdx > 0) sb.Append("\\P");
 
+                List<MTextMetrics> row = rows[rowIdx];
                 for (int idx = 0; idx < row.Count; idx++)
                 {
-                    _ = sb.Append(row[idx].RawText);
+                    sb.Append(row[idx].RawText);
 
                     if (idx < row.Count - 1)
                     {
-                        MTextMetrics current = row[idx];
-                        MTextMetrics next = row[idx + 1];
-
-                        double distanceX = Math.Max(0, next.Bounds.MinPoint.X - current.Bounds.MaxPoint.X);
-                        double textWidth = current.Bounds.MaxPoint.X - current.Bounds.MinPoint.X;
-
-                        bool isTab = distanceX > textWidth * TAB_INSERTION_MULTIPLIER;
-                        _ = sb.Append(isTab ? "\\t" : " ");
+                        double distanceX = Math.Max(0, row[idx + 1].Bounds.MinPoint.X - row[idx].Bounds.MaxPoint.X);
+                        double textWidth = row[idx].Bounds.MaxPoint.X - row[idx].Bounds.MinPoint.X;
+                        sb.Append(distanceX > textWidth * MTextJoinerConfig.TabInsertionMultiplier ? "\\t" : " ");
                     }
-                }
-
-                if (isFirstRow)
-                {
-                    isFirstRow = false;
                 }
             }
 
@@ -341,38 +271,16 @@ namespace AutoCADCmdAlgorithmTester
 
         private static (Point3d InsertionPoint, MTextMetrics Template) GetBlockAnchor(List<List<MTextMetrics>> rows)
         {
-            double minX = double.MaxValue;
-            var elements = rows.SelectMany(row => row);
-            MTextMetrics topElement = elements.First();
+            IEnumerable<MTextMetrics> elements = rows.SelectMany(row => row);
 
-            foreach (MTextMetrics item in elements)
-            {
-                Point3d itemTop = item.Bounds.MaxPoint;
-                Point3d itemBottom = item.Bounds.MinPoint;
-                Point3d topElementTop = topElement.Bounds.MaxPoint;
-                Point3d topElementBottom = topElement.Bounds.MinPoint;
+            double minX = elements.Min(t => t.Bounds.MinPoint.X);
 
-                // Выбираем элемент с наименьшей X-координатой нижней границы.
-                if (itemBottom.X < minX)
-                {
-                    minX = itemBottom.X;
-                }
-
-                // Выбираем элемент с наибольшей Y-координатой верхней границы.
-                if (itemTop.Y > topElementTop.Y)
-                {
-                    topElement = item;
-                }
-
-                // Если верхние границы по Y совпадают, то выбираем элемент, у которого нижняя граница находится левее.
-                if (itemTop.Y == topElementTop.Y && itemBottom.X < topElementBottom.X)
-                {
-                    topElement = item;
-                }
-            }
+            MTextMetrics topElement = elements
+                .OrderByDescending(t => t.Bounds.MaxPoint.Y)
+                .ThenBy(t => t.Bounds.MinPoint.X)
+                .First();
 
             Point3d insertionPoint = new(minX, topElement.Bounds.MaxPoint.Y, topElement.Centroid.Z);
-
             return (insertionPoint, topElement);
         }
 
@@ -391,9 +299,7 @@ namespace AutoCADCmdAlgorithmTester
             };
 
             result.SetDatabaseDefaults();
-
-            _ = currentSpace.AppendEntity(result);
-
+            currentSpace.AppendEntity(result);
             trx.AddNewlyCreatedDBObject(result, true);
         }
 
