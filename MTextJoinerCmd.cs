@@ -47,6 +47,8 @@ namespace AutoCADCmdAlgorithmTester
         // вместо пробела вставляется табуляция (\t) в итоговом MText.
         private const double TAB_INSERTION_MULTIPLIER = 1.5;
 
+
+
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
         public static void SmartJoinCommand()
         {
