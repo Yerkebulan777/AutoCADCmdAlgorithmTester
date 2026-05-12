@@ -29,11 +29,22 @@ namespace AutoCADCmdAlgorithmTester
     /// </summary>
     internal sealed partial class MTextJoinerCmd
     {
-        // Множитель для определения максимального допустимого разрыва между колонками/сегментами по горизонтали
+        // Максимальный горизонтальный разрыв (в единицах высоты текста) между сегментами строки,
+        // при котором они ещё считаются частью одной колонки.
+        // Тот же множитель используется как допуск X-пересечения при сборке блоков.
         private const double BLOCK_GAP_MULTIPLIER = 2.5;
-        // Множитель для объединения текстов в одну строку
+
+        // Максимальный вертикальный разрыв (в единицах высоты текста) между последовательными
+        // строками одного блока. Намеренно больше BLOCK_GAP_MULTIPLIER: межстрочный интервал
+        // в чертежах часто превышает 2× высоту строки, а параграфы могут иметь ещё больший отступ.
+        private const double BLOCK_ROW_GAP_MULTIPLIER = 3.0;
+
+        // Максимальное Y-расстояние между центроидами (в единицах высоты) для того,
+        // чтобы два фрагмента считались на одной горизонтальной строке.
         private const double ROW_TOLERANCE_MULTIPLIER = 0.5;
-        // Множитель для вставки табуляции вместо пробела между фрагментами в одной строке
+
+        // Отношение разрыва к ширине текущего фрагмента, при превышении которого
+        // вместо пробела вставляется табуляция (\t) в итоговом MText.
         private const double TAB_INSERTION_MULTIPLIER = 1.5;
 
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
@@ -160,7 +171,8 @@ namespace AutoCADCmdAlgorithmTester
             {
                 foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
                 {
-                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.CanAppend(segment, BLOCK_GAP_MULTIPLIER));
+                    MTextBlock? targetBlock = blocks.FirstOrDefault(
+                        block => block.CanAppend(segment, BLOCK_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER));
 
                     if (targetBlock is null)
                     {
@@ -177,32 +189,62 @@ namespace AutoCADCmdAlgorithmTester
         }
 
         /// <summary>
-        /// Кластеризует фрагменты текста в строки, основываясь на их Y-координате.
-        /// Фрагменты, центроиды которых находятся на близкой Y-координате, объединяются в одну строку.
+        /// Группирует фрагменты текста в горизонтальные строки по Y-координате центроидов.
+        ///
+        /// ПОЧЕМУ отслеживаем диапазон Y строки, а не сравниваем с якорем [0]:
+        /// Сравнение каждого нового элемента только с currentRow[0] накапливает ошибку
+        /// ("anchor drift") при переменных высотах текста. Если первый элемент строки —
+        /// крупный заголовок, его большая высота создаёт широкий допуск и притягивает
+        /// лишние элементы. Если высоты постепенно дрейфуют (типично в ячейках таблиц),
+        /// накопленное смещение разрывает то, что должно быть единой строкой.
+        /// Отслеживание текущего диапазона [rowMinCentroidY, rowMaxCentroidY] и максимальной
+        /// высоты строки даёт стабильную, устойчивую к дрейфу границу.
+        ///
+        /// Строки выдаются в порядке сверху вниз (убывающий Y), чтобы ClusterIntoBlocks
+        /// обрабатывал документ от заголовка к нижней части листа.
         /// </summary>
         private static List<List<MTextMetrics>> ClusterIntoRows(List<MTextMetrics> elements)
         {
             List<MTextMetrics> sortedByY = [.. elements.OrderByDescending(t => t.Centroid.Y)];
+
             List<MTextMetrics> currentRow = [sortedByY[0]];
             List<List<MTextMetrics>> rows = [];
+
+            // Текущий Y-диапазон и максимальная высота строки — расширяются при каждом добавлении.
+            double rowMinCentroidY = sortedByY[0].Centroid.Y;
+            double rowMaxCentroidY = sortedByY[0].Centroid.Y;
+            double rowMaxHeight    = sortedByY[0].Height;
 
             for (int idx = 1; idx < sortedByY.Count; idx++)
             {
                 MTextMetrics current = sortedByY[idx];
-                MTextMetrics anchor = currentRow[0];
 
-                double tolerance = Math.Max(current.Height, anchor.Height) * ROW_TOLERANCE_MULTIPLIER;
+                // Допуск берём от самого высокого элемента, что уже видели в этой строке
+                // (включая кандидата), чтобы один крупный элемент не доминировал над всей строкой.
+                double tolerance = Math.Max(current.Height, rowMaxHeight) * ROW_TOLERANCE_MULTIPLIER;
 
-                double distance = Math.Abs(anchor.Centroid.Y - current.Centroid.Y);
+                // Расстояние до ближайшего края диапазона строки, а не до фиксированного якоря.
+                // Если кандидат внутри [rowMinCentroidY, rowMaxCentroidY] — расстояние равно 0.
+                double distanceToRange = Math.Max(0,
+                    Math.Max(rowMinCentroidY - current.Centroid.Y,   // кандидат ниже диапазона
+                             current.Centroid.Y - rowMaxCentroidY));  // кандидат выше диапазона
 
-                if (distance < tolerance)
+                if (distanceToRange < tolerance)
                 {
+                    // Кандидат принадлежит текущей строке — расширяем диапазон.
                     currentRow.Add(current);
+                    rowMinCentroidY = Math.Min(rowMinCentroidY, current.Centroid.Y);
+                    rowMaxCentroidY = Math.Max(rowMaxCentroidY, current.Centroid.Y);
+                    rowMaxHeight    = Math.Max(rowMaxHeight, current.Height);
                 }
                 else
                 {
+                    // Кандидат слишком далеко — закрываем текущую строку, начинаем новую.
                     rows.Add(currentRow);
-                    currentRow = [current];
+                    currentRow      = [current];
+                    rowMinCentroidY = current.Centroid.Y;
+                    rowMaxCentroidY = current.Centroid.Y;
+                    rowMaxHeight    = current.Height;
                 }
             }
 
