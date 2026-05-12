@@ -17,6 +17,10 @@ namespace AutoCADCmdAlgorithmTester
         string RawText,
         Point3d Centroid,
         Point3d TopLeftPt,
+        double MinX,
+        double MaxX,
+        double MinY,
+        double MaxY,
         double Height,
         ObjectId LayerId,
         ObjectId StyleId,
@@ -26,6 +30,43 @@ namespace AutoCADCmdAlgorithmTester
     {
         private const double Y_TOLERANCE_MULTIPLIER = 0.5;
         private const double TAB_INSERTION_MULTIPLIER = 1.5;
+        private const double BLOCK_GAP_MULTIPLIER = 2.5;
+
+        private sealed class MTextBlock
+        {
+            public MTextBlock(List<MTextMetrics> firstRow)
+            {
+                Rows.Add(firstRow);
+                RefreshBounds(firstRow);
+            }
+
+            public List<List<MTextMetrics>> Rows { get; } = [];
+
+            private double MinX { get; set; } = double.MaxValue;
+
+            private double MaxX { get; set; } = double.MinValue;
+
+            public bool CanAppend(List<MTextMetrics> row)
+            {
+                double tolerance = row.Max(t => t.Height) * BLOCK_GAP_MULTIPLIER;
+                double rowMinX = row.Min(t => t.MinX);
+                double rowMaxX = row.Max(t => t.MaxX);
+
+                return rowMinX <= MaxX + tolerance && rowMaxX >= MinX - tolerance;
+            }
+
+            public void Append(List<MTextMetrics> row)
+            {
+                Rows.Add(row);
+                RefreshBounds(row);
+            }
+
+            private void RefreshBounds(IEnumerable<MTextMetrics> row)
+            {
+                MinX = Math.Min(MinX, row.Min(t => t.MinX));
+                MaxX = Math.Max(MaxX, row.Max(t => t.MaxX));
+            }
+        }
 
 
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
@@ -53,16 +94,19 @@ namespace AutoCADCmdAlgorithmTester
                 {
                     List<MTextMetrics> groupElements = [.. group];
 
-                    List<List<MTextMetrics>> rows = ClusterIntoRows(groupElements);
+                    List<MTextBlock> blocks = ClusterIntoBlocks(groupElements);
 
-                    string content = BuildMTextContent(rows);
+                    foreach (MTextBlock block in blocks)
+                    {
+                        string content = BuildMTextContent(block.Rows);
+                        Point3d insertionPoint = GetInsertionPoint(block.Rows);
+                        MTextMetrics template = GetTemplate(block.Rows);
 
-                    MTextMetrics template = groupElements[0];
+                        CreateResultMText(currentSpace, trx, content, template, insertionPoint);
+                        createdCount++;
+                    }
 
-                    CreateResultMText(currentSpace, trx, content, template);
                     EraseOriginals(trx, groupElements);
-
-                    createdCount++;
                 }
 
                 trx.Commit();
@@ -94,10 +138,11 @@ namespace AutoCADCmdAlgorithmTester
             {
                 DBObject dbObj = trx.GetObject(selObj.ObjectId, OpenMode.ForRead);
 
-                if (dbObj is MText mText && TryGetBounds(mText, out Point3d centroid, out Point3d topLeft))
+                if (dbObj is MText mText && TryGetBounds(mText, out Point3d centroid, out Point3d topLeft, out Extents3d ext))
                 {
                     result.Add(new MTextMetrics(
                         mText.ObjectId, mText.Text, centroid, topLeft,
+                        ext.MinPoint.X, ext.MaxPoint.X, ext.MinPoint.Y, ext.MaxPoint.Y,
                         mText.TextHeight, mText.LayerId, mText.TextStyleId, mText.Rotation));
                 }
             }
@@ -106,14 +151,15 @@ namespace AutoCADCmdAlgorithmTester
             return result;
         }
 
-        private static bool TryGetBounds(MText mText, out Point3d centroid, out Point3d topLeft)
+        private static bool TryGetBounds(MText mText, out Point3d centroid, out Point3d topLeft, out Extents3d ext)
         {
             centroid = Point3d.Origin;
             topLeft = Point3d.Origin;
+            ext = new Extents3d();
 
             if (mText.Bounds.HasValue)
             {
-                Extents3d ext = mText.Bounds.Value;
+                ext = mText.Bounds.Value;
                 centroid = new Point3d(
                     (ext.MaxPoint.X + ext.MinPoint.X) * 0.5,
                     (ext.MaxPoint.Y + ext.MinPoint.Y) * 0.5,
@@ -156,15 +202,68 @@ namespace AutoCADCmdAlgorithmTester
             return rows;
         }
 
+        private static List<MTextBlock> ClusterIntoBlocks(List<MTextMetrics> elements)
+        {
+            List<List<MTextMetrics>> rows = ClusterIntoRows(elements);
+            List<MTextBlock> blocks = [];
+
+            foreach (List<MTextMetrics> row in rows)
+            {
+                foreach (List<MTextMetrics> segment in SplitRowIntoSegments(row))
+                {
+                    MTextBlock? targetBlock = blocks.FirstOrDefault(block => block.CanAppend(segment));
+
+                    if (targetBlock is null)
+                    {
+                        blocks.Add(new MTextBlock(segment));
+                    }
+                    else
+                    {
+                        targetBlock.Append(segment);
+                    }
+                }
+            }
+
+            return blocks;
+        }
+
+        private static List<List<MTextMetrics>> SplitRowIntoSegments(List<MTextMetrics> row)
+        {
+            List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.MinX)];
+            List<List<MTextMetrics>> segments = [];
+            List<MTextMetrics> currentSegment = [sortedByX[0]];
+
+            for (int idx = 1; idx < sortedByX.Count; idx++)
+            {
+                MTextMetrics previous = currentSegment[^1];
+                MTextMetrics current = sortedByX[idx];
+
+                double gap = current.MinX - previous.MaxX;
+                double tolerance = previous.Height * BLOCK_GAP_MULTIPLIER;
+
+                if (gap > tolerance)
+                {
+                    segments.Add(currentSegment);
+                    currentSegment = [current];
+                }
+                else
+                {
+                    currentSegment.Add(current);
+                }
+            }
+
+            segments.Add(currentSegment);
+            return segments;
+        }
+
         private static string BuildMTextContent(List<List<MTextMetrics>> rows)
         {
             bool isFirstRow = true;
             StringBuilder sb = new();
-            Point3d insertionPoint = Point3d.Origin;
 
             foreach (List<MTextMetrics> row in rows)
             {
-                List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.Centroid.X)];
+                List<MTextMetrics> sortedByX = [.. row.OrderBy(t => t.MinX)];
 
                 if (!isFirstRow)
                 {
@@ -180,7 +279,7 @@ namespace AutoCADCmdAlgorithmTester
                         MTextMetrics current = sortedByX[idx];
                         MTextMetrics next = sortedByX[idx + 1];
 
-                        double distanceX = Math.Abs(next.TopLeftPt.X - current.TopLeftPt.X);
+                        double distanceX = Math.Max(0, next.MinX - current.MaxX);
 
                         bool isTab = distanceX > current.Height * current.RawText.Length * TAB_INSERTION_MULTIPLIER;
                         _ = sb.Append(isTab ? "\\t" : " ");
@@ -189,7 +288,6 @@ namespace AutoCADCmdAlgorithmTester
 
                 if (isFirstRow)
                 {
-                    insertionPoint = sortedByX[0].TopLeftPt;
                     isFirstRow = false;
                 }
             }
@@ -197,13 +295,34 @@ namespace AutoCADCmdAlgorithmTester
             return sb.ToString();
         }
 
+        private static Point3d GetInsertionPoint(List<List<MTextMetrics>> rows)
+        {
+            double minX = rows.SelectMany(row => row).Min(t => t.MinX);
+            MTextMetrics topElement = rows
+                .SelectMany(row => row)
+                .OrderByDescending(t => t.MaxY)
+                .ThenBy(t => t.MinX)
+                .First();
+
+            return new Point3d(minX, topElement.MaxY, topElement.TopLeftPt.Z);
+        }
+
+        private static MTextMetrics GetTemplate(List<List<MTextMetrics>> rows)
+        {
+            return rows
+                .SelectMany(row => row)
+                .OrderByDescending(t => t.MaxY)
+                .ThenBy(t => t.MinX)
+                .First();
+        }
+
         private static void CreateResultMText(
             BlockTableRecord currentSpace, Transaction trx,
-            string content, MTextMetrics template)
+            string content, MTextMetrics template, Point3d insertionPoint)
         {
             MText result = new()
             {
-                Location = template.TopLeftPt,
+                Location = insertionPoint,
                 Contents = content,
                 TextHeight = template.Height,
                 LayerId = template.LayerId,
