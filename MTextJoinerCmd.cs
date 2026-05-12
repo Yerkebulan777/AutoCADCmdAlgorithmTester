@@ -35,7 +35,6 @@ namespace AutoCADCmdAlgorithmTester
 
         // Допуск X-перекрытия при проверке принадлежности сегмента блоку —
         // строгий, чтобы блок не «всасывал» соседнюю колонку.
-        // Воронка = ±BLOCK_X_TOLERANCE_MULTIPLIER × h на каждую сторону.
         private const double BLOCK_X_TOLERANCE_MULTIPLIER = 0.2;
 
         // Допуск Y-близости (в единицах высоты текста) между последовательными
@@ -53,7 +52,6 @@ namespace AutoCADCmdAlgorithmTester
         // Отношение разрыва к ширине текущего фрагмента, при превышении которого
         // вместо пробела вставляется табуляция (\t) в итоговом MText.
         private const double TAB_INSERTION_MULTIPLIER = 1.5;
-
 
 
         [CommandMethod("SmartJoinMText", CommandFlags.Modal | CommandFlags.UsePickSet)]
