@@ -270,7 +270,7 @@ namespace AutoCADCmdAlgorithmTester
                 MTextMetrics current = sortedByX[idx];
 
                 double gap = current.Bounds.MinPoint.X - previous.Bounds.MaxPoint.X;
-                double tolerance = previous.Height * BLOCK_GAP_MULTIPLIER;
+                double tolerance = Math.Max(previous.Height, current.Height) * BLOCK_GAP_MULTIPLIER;
 
                 if (gap > tolerance)
                 {
