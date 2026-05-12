@@ -29,26 +29,26 @@ namespace AutoCADCmdAlgorithmTester
     /// </summary>
     internal sealed partial class MTextJoinerCmd
     {
-        // Допуск X при разбивке строки на сегменты — только для определения границ колонки.
-        // Разрыв > SEGMENT_GAP_MULTIPLIER × h между соседними фрагментами → новая колонка.
-        private const double SEGMENT_GAP_MULTIPLIER = 1.0;
+        // Минимальный X-зазор для разделения строки на колонки.
+        // Разрыв > COLUMN_GAP_MULTIPLIER × h между соседними фрагментами → новая колонка.
+        private const double COLUMN_GAP_MULTIPLIER = 0.5;
 
-        // Допуск X при проверке принадлежности сегмента блоку — более строгий,
-        // чтобы блок не «всасывал» соседнюю колонку.
-        // Воронка = ±BLOCK_X_GAP_MULTIPLIER × h на каждую сторону.
-        private const double BLOCK_X_GAP_MULTIPLIER = 0.5;
+        // Допуск X-перекрытия при проверке принадлежности сегмента блоку —
+        // строгий, чтобы блок не «всасывал» соседнюю колонку.
+        // Воронка = ±BLOCK_X_TOLERANCE_MULTIPLIER × h на каждую сторону.
+        private const double BLOCK_X_TOLERANCE_MULTIPLIER = 0.2;
 
-        // Максимальный вертикальный разрыв (в единицах высоты текста) между последовательными
+        // Допуск Y-близости (в единицах высоты текста) между последовательными
         // строками одного блока. Уменьшено с 3.0, чтобы пробел между абзацами не сливал их.
-        private const double BLOCK_ROW_GAP_MULTIPLIER = 1.5;
+        private const double BLOCK_Y_TOLERANCE_MULTIPLIER = 0.8;
 
         // Максимальный суммарный вертикальный размах блока (в единицах высоты текста).
         // Сторожевое ограничение: колонтитул и заголовок не попадут в один блок.
         private const double BLOCK_MAX_HEIGHT_MULTIPLIER = 30.0;
 
-        // Максимальное Y-расстояние между центроидами (в единицах высоты) для того,
+        // Допуск Y-расстояния между центроидами (в единицах высоты) для того,
         // чтобы два фрагмента считались на одной горизонтальной строке.
-        private const double ROW_TOLERANCE_MULTIPLIER = 0.5;
+        private const double ROW_Y_TOLERANCE_MULTIPLIER = 0.3;
 
         // Отношение разрыва к ширине текущего фрагмента, при превышении которого
         // вместо пробела вставляется табуляция (\t) в итоговом MText.
@@ -183,7 +183,7 @@ namespace AutoCADCmdAlgorithmTester
                     double segCenterX = (segment.Min(t => t.Bounds.MinPoint.X) + segment.Max(t => t.Bounds.MaxPoint.X)) * 0.5;
 
                     MTextBlock? targetBlock = blocks
-                        .Where(b => b.IsCompatible(segment, BLOCK_X_GAP_MULTIPLIER, BLOCK_ROW_GAP_MULTIPLIER, BLOCK_MAX_HEIGHT_MULTIPLIER))
+                                            .Where(b => b.IsCompatible(segment, BLOCK_X_TOLERANCE_MULTIPLIER, BLOCK_Y_TOLERANCE_MULTIPLIER, BLOCK_MAX_HEIGHT_MULTIPLIER))
                         .MinBy(b => Math.Abs(b.CenterX - segCenterX));
 
                     if (targetBlock is null)
@@ -230,9 +230,10 @@ namespace AutoCADCmdAlgorithmTester
             {
                 MTextMetrics current = sortedByY[idx];
 
-                // Допуск берём от самого высокого элемента, что уже видели в этой строке
-                // (включая кандидата), чтобы один крупный элемент не доминировал над всей строкой.
-                double tolerance = Math.Max(current.Height, rowMaxHeight) * ROW_TOLERANCE_MULTIPLIER;
+                // Допуск берём только от высоты текущего кандидата (консервативный подход).
+                // Высота уже добавленных элементов не должна влиять на приём нового —
+                // крупный заголовок не должен раздувать допуск и притягивать следующую строку.
+                double tolerance = current.Height * ROW_Y_TOLERANCE_MULTIPLIER;
 
                 // Расстояние до ближайшего края диапазона строки, а не до фиксированного якоря.
                 // Если кандидат внутри [rowMinCentroidY, rowMaxCentroidY] — расстояние равно 0.
@@ -281,7 +282,7 @@ namespace AutoCADCmdAlgorithmTester
                 MTextMetrics current = sortedByX[idx];
 
                 double gap = current.Bounds.MinPoint.X - previous.Bounds.MaxPoint.X;
-                double tolerance = Math.Max(previous.Height, current.Height) * SEGMENT_GAP_MULTIPLIER;
+                double tolerance = Math.Max(previous.Height, current.Height) * COLUMN_GAP_MULTIPLIER;
 
                 if (gap > tolerance)
                 {
